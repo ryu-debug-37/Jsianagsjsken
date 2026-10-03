@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Love Code</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #080818; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font: 12px/1.2 system-ui, sans-serif; color: rgba(255,255,255,.35);
+    letter-spacing: .05em; pointer-events: none; transition: opacity .6s; opacity: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="rain"></canvas>
+<canvas id="fx"></canvas>
+<div id="hint">ketuk layar untuk mengulang</div>
+
+<script>
+/* ====== UBAH DI SINI ====== */
+const CONFIG = {
+  countdown: ["3", "2", "1"],
+  words: ["You", "Are", "My", "Love"],
+  finalText: ["I Love ", "❤", " You Sayang"],   // bagian tengah = hati kecil berwarna
+  rainChars: "ILOVEYOUSAYANG",
+  holdMs: 1500,        // lama tiap kata/angka tampil
+  finalHoldMs: 0,      // 0 = hati tetap tampil selamanya
+  textColor: "#f3eec0",
+  heartColors: ["#ff4f9a", "#ff7ab8", "#ff9fcb", "#ff2f86"],
+  rainColor: [255, 90, 170]
+};
+// Bisa juga lewat URL: ?kata=Kamu,Adalah,Cintaku  &teks=Aku Sayang Kamu
+const q = new URLSearchParams(location.search);
+if (q.get("kata")) CONFIG.words = q.get("kata").split(",").map(s => s.trim()).filter(Boolean);
+if (q.get("teks")) CONFIG.finalText = [q.get("teks")];
+/* ========================== */
+
+const rainC = document.getElementById("rain"), rctx = rainC.getContext("2d");
+const fxC = document.getElementById("fx"), ctx = fxC.getContext("2d");
+const hint = document.getElementById("hint");
+const BG = "#080818";
+let W = 0, H = 0, DPR = 1;
+
+/* ---------- Matrix rain ---------- */
+const FS = 16;
+let cols = 0, drops = [], rainTimer = 0;
+function initRain() {
+  cols = Math.ceil(W / FS);
+  drops = Array.from({ length: cols }, () => ({
+    y: Math.random() * -60,
+    on: Math.random() < 0.6,
+    speed: 0.5 + Math.random() * 0.9
+  }));
+}
+function stepRain() {
+  rctx.fillStyle = "rgba(8,8,24,0.14)";
+  rctx.fillRect(0, 0, W, H);
+  rctx.font = FS + "px monospace";
+  rctx.textAlign = "center";
+  const [r, g, b] = CONFIG.rainColor;
+  for (let i = 0; i < cols; i++) {
+    const d = drops[i];
+    if (!d.on) { if (Math.random() < 0.004) { d.on = true; d.y = 0; } continue; }
+    const x = i * FS + FS / 2, y = d.y * FS;
+    const heart = Math.random() < 0.06;
+    const ch = heart ? "♥" : CONFIG.rainChars[(Math.random() * CONFIG.rainChars.length) | 0];
+    // kepala terang
+    rctx.fillStyle = "rgba(255,225,240,0.95)";
+    rctx.fillText(ch, x, y);
+    // jejak sedikit di atasnya
+    rctx.fillStyle = `rgba(${r},${g},${b},0.75)`;
+    rctx.fillText(CONFIG.rainChars[(Math.random() * CONFIG.rainChars.length) | 0], x, y - FS);
+    d.y += d.speed > 1 ? 1 : (Math.random() < d.speed ? 1 : 0);
+    if (y > H && Math.random() > 0.96) {
+      d.y = 0;
+      if (Math.random() < 0.35) d.on = false;
+    }
+  }
+}
+
+/* ---------- Particles ---------- */
+const N = 1700;
+const parts = [];
+for (let i = 0; i < N; i++) {
+  parts.push({ x: 0, y: 0, vx: 0, vy: 0, ox: 0, oy: 0, wait: 0, col: CONFIG.textColor, kind: 0, sz: 4, heart: false, born: false });
+}
+
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+// Titik-titik dari teks (offset terhadap pusat layar)
+function textPoints(str) {
+  const off = document.createElement("canvas");
+  const octx = off.getContext("2d");
+  const fs = Math.min(W * 0.62 / Math.max(1, str.length * 0.55), H * 0.38, 260);
+  off.width = Math.ceil(W); off.height = Math.ceil(H);
+  octx.fillStyle = "#fff";
+  octx.font = `900 ${fs}px "Arial Black", Arial, sans-serif`;
+  octx.textAlign = "center"; octx.textBaseline = "middle";
+  octx.fillText(str, W / 2, H / 2);
+  const step = Math.max(5, Math.round(fs / 24));
+  const data = octx.getImageData(0, 0, off.width, off.height).data;
+  const pts = [];
+  for (let y = 0; y < off.height; y += step)
+    for (let x = 0; x < off.width; x += step)
+      if (data[(y * off.width + x) * 4 + 3] > 128) pts.push([x - W / 2, y - H / 2]);
+  return { pts, step };
+}
+
+// Titik-titik outline hati
+function heartPoints(count) {
+  const s = Math.min(W * 0.82 / 34, H * 0.62 / 30, 22);
+  const pts = [];
+  for (let i = 0; i < count; i++) {
+    const t = Math.random() * Math.PI * 2;
+    let x = 16 * Math.pow(Math.sin(t), 3);
+    let y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+    // ketebalan: geser ke arah dalam secara acak
+    const k = 1 - Math.pow(Math.random(), 2.2) * 0.2;
+    pts.push([x * k * s, (y * k + 1) * s]);
+  }
+  return pts;
+}
+
+/* ---------- Timeline ---------- */
+let seq = [];
+let idx = -1, nextAt = 0, startT = 0, mode = "rain", textAlpha = 0, running = false;
+
+function buildSeq() {
+  seq = [...CONFIG.countdown, ...CONFIG.words].map(s => ({ type: "text", label: s }));
+  seq.push({ type: "heart" });
+}
+
+function burst(power) {
+  for (const p of parts) {
+    const a = Math.random() * Math.PI * 2, sp = (Math.random() * 0.8 + 0.2) * power;
+    p.vx += Math.cos(a) * sp; p.vy += Math.sin(a) * sp - power * 0.15;
+    p.wait = Math.random() * 380;
+  }
+}
+
+function applyItem(item, now) {
+  burst(item.type === "heart" ? 12 : 9);
+  if (item.type === "text") {
+    mode = "text"; textAlpha = 0;
+    const { pts, step } = textPoints(item.label);
+    shuffle(pts);
+    const use = Math.min(pts.length, N);
+    for (let i = 0; i < N; i++) {
+      const t = pts[i % use] || [0, 0];
+      const p = parts[i];
+      p.ox = t[0]; p.oy = t[1]; p.col = CONFIG.textColor; p.kind = 0; p.sz = step * 0.82; p.heart = false;
+    }
+  } else {
+    mode = "heart";
+    const pts = heartPoints(N);
+    for (let i = 0; i < N; i++) {
+      const p = parts[i];
+      p.ox = pts[i][0]; p.oy = pts[i][1];
+      p.col = CONFIG.heartColors[(Math.random() * CONFIG.heartColors.length) | 0];
+      p.kind = 1; p.sz = 1.6 + Math.random() * 2.6; p.heart = Math.random() < 0.18;
+    }
+  }
+}
+
+function start() {
+  buildSeq();
+  idx = -1; mode = "rain"; textAlpha = 0; running = true;
+  hint.style.opacity = 0;
+  startT = performance.now();
+  nextAt = startT + 1400;
+  for (const p of parts) {
+    p.x = Math.random() * W; p.y = -20 - Math.random() * H * 0.5;
+    p.vx = 0; p.vy = 0; p.ox = 0; p.oy = 0; p.wait = 1e9; p.born = false;
+  }
+}
+
+/* ---------- Render ---------- */
+function drawFinalText(now) {
+  const t = Math.min(1, textAlpha);
+  if (t <= 0) return;
+  const fs = Math.max(16, Math.min(W, H) * 0.052 * (W < 600 ? 1.5 : 1));
+  ctx.save();
+  ctx.translate(W / 2, H / 2 + fs * 0.1);
+  ctx.rotate(-0.04);
+  ctx.globalAlpha = t;
+  ctx.font = `700 italic ${fs}px "Comic Sans MS", "Segoe Print", cursive`;
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  const parts3 = CONFIG.finalText;
+  const widths = parts3.map(s => ctx.measureText(s).width);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = -total / 2;
+  const pulse = 1 + Math.sin(now / 260) * 0.05;
+  parts3.forEach((s, i) => {
+    const isHeart = s === "❤";
+    ctx.save();
+    if (isHeart) {
+      ctx.translate(x + widths[i] / 2, 0); ctx.scale(pulse, pulse);
+      ctx.fillStyle = "#ff6a3d"; ctx.textAlign = "center";
+      ctx.fillText(s, 0, 0);
+    } else {
+      ctx.fillStyle = "#ff8fb8"; ctx.shadowColor = "rgba(255,80,160,.8)"; ctx.shadowBlur = 12;
+      ctx.fillText(s, x, 0);
+    }
+    ctx.restore();
+    x += widths[i];
+  });
+  ctx.restore();
+}
+
+let last = performance.now(), rainAcc = 0;
+function frame(now) {
+  const dt = Math.min(40, now - last); last = now;
+
+  rainAcc += dt;
+  if (rainAcc > 55) { stepRain(); rainAcc = 0; }
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (running && now >= nextAt) {
+    idx++;
+    if (idx < seq.length) {
+      const item = seq[idx];
+      applyItem(item, now);
+      if (item.type === "heart") {
+        nextAt = CONFIG.finalHoldMs ? now + CONFIG.finalHoldMs : Infinity;
+        hint.style.opacity = 1;
+      } else nextAt = now + CONFIG.holdMs;
+    } else {
+      running = false;
+      if (CONFIG.finalHoldMs) setTimeout(start, 600);
+    }
+  }
+
+  const cx = W / 2, cy = H / 2;
+  const pulse = mode === "heart" ? 1 + Math.sin(now / 280) * 0.035 : 1;
+  const k = 0.07, damp = 0.86;
+  const ready = mode !== "rain";
+  if (ready) textAlpha += dt / 900;
+
+  for (let i = 0; i < N; i++) {
+    const p = parts[i];
+    if (ready) {
+      if (p.wait > 0) p.wait -= dt;
+      if (p.wait <= 0) {
+        const tx = cx + p.ox * pulse, ty = cy + p.oy * pulse;
+        p.vx += (tx - p.x) * k; p.vy += (ty - p.y) * k;
+        p.vx *= damp; p.vy *= damp;
+      } else {
+        p.vx *= 0.97; p.vy *= 0.97;
+      }
+      p.x += p.vx; p.y += p.vy;
+    }
+    if (!ready) continue;
+
+    const flying = p.wait > 0;
+    if (flying) {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fillRect(p.x, p.y, 2.2, 2.2);
+    } else if (p.kind === 0) {
+      ctx.fillStyle = p.col;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.sz / 2, 0, 6.283); ctx.fill();
+    } else {
+      ctx.fillStyle = p.col;
+      if (p.heart) {
+        const s = p.sz * 2.4;
+        ctx.font = s * 2 + "px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("♥", p.x, p.y);
+      } else {
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.sz * 0.7, 0, 6.283); ctx.fill();
+      }
+    }
+  }
+
+  if (mode === "heart") drawFinalText(now);
+  requestAnimationFrame(frame);
+}
+
+/* ---------- Setup ---------- */
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  for (const c of [rainC, fxC]) { c.width = W * DPR; c.height = H * DPR; }
+  rctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  rctx.fillStyle = BG; rctx.fillRect(0, 0, W, H);
+  initRain();
+  // hitung ulang target bila sedang berjalan
+  if (idx >= 0 && idx < seq.length) { const it = seq[idx]; const keep = nextAt; applyItem(it, performance.now()); nextAt = keep; }
+}
+addEventListener("resize", resize);
+addEventListener("pointerdown", () => { if (!running || idx >= seq.length - 1) start(); });
+
+resize();
+start();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
